@@ -1,0 +1,3 @@
+export(parse_motif_text)
+export(parse_motif_file)
+export(mymotif_records)

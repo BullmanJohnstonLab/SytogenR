@@ -1,0 +1,10 @@
+Package: mymotifr
+Type: Package
+Title: Lightweight MyMotif Parsing Helpers
+Version: 0.1.0
+Authors@R: person("Heather Bouzek", "writer", email = "hkbouzek@mdanderson.com", role = c("aut", "cre"))
+Description: Minimal R utilities for parsing motif tables and converting them into records used by the MyMotif workflow.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.3.2
