@@ -1,3 +1,6 @@
 export(parse_motif_text)
 export(parse_motif_file)
 export(mymotif_records)
+export(translate_dna_sequence)
+export(calculate_codon_bias)
+export(codon_bias_from_fasta)

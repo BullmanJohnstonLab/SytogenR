@@ -1,15 +1,15 @@
+# Parse Motif
+#
+# This set of functions takes motif data from Rebase and parses it into a data frame
+
 `%||%` <- function(x, y) {
   if (is.null(x) || length(x) == 0) {
-    return(y)
-  }
+    return(y)}
   if (is.character(x) && !nzchar(trimws(x))) {
-    return(y)
-  }
+    return(y)}
   if (all(is.na(x))) {
-    return(y)
-  }
-  x
-}
+    return(y)}
+  return(x)}
 
 empty_mymotif_records <- function() {
   data.frame(
@@ -19,22 +19,16 @@ empty_mymotif_records <- function() {
     meth_type = character(),
     comp_meth_base = character(),
     comp_meth_type = character(),
-    stringsAsFactors = FALSE
-  )
-}
+    stringsAsFactors = FALSE)}
 
 parse_delimited_motif_table <- function(text) {
   lines <- strsplit(text, "\n", fixed = TRUE)[[1]]
   lines <- lines[nzchar(trimws(lines))]
-  if (length(lines) < 2) {
-    return(NULL)
-  }
-
+  if (length(lines) < 2) {return(NULL)}
+  # try to parse the text as a delimited table with various separators
   separators <- c("\t", ",", ";", "|")
   for (sep in separators) {
-    if (!grepl(sep, text, fixed = TRUE)) {
-      next
-    }
+    if (!grepl(sep, text, fixed = TRUE)) {next}
     parsed <- try(
       utils::read.table(
         text = paste(lines, collapse = "\n"),
@@ -43,33 +37,25 @@ parse_delimited_motif_table <- function(text) {
         stringsAsFactors = FALSE,
         comment.char = "",
         quote = '"',
-        fill = TRUE
-      ),
-      silent = TRUE
-    )
+        fill = TRUE),
+      silent = TRUE)
     if (!inherits(parsed, "try-error") && ncol(parsed) >= 1) {
-      return(parsed)
-    }
-  }
-
-  NULL
-}
+      return(parsed)}}
+  NULL}
 
 normalize_motif_columns <- function(df) {
   if (is.null(df) || nrow(df) == 0) {
-    return(df)
-  }
-
+    return(df)}
+  # clean up column names: trim whitespace and convert to lowercase
   names(df) <- trimws(names(df))
   normalized <- tolower(names(df))
-
+  # find the motif column by looking for common aliases
   motif_aliases <- c("motif", "rec_seq", "recognition_motif", "recognition_sequence", "sequence", "seq")
   motif_idx <- which(normalized %in% motif_aliases)
   if (length(motif_idx) == 0) {
-    stop("Could not find a recognition-sequence field in the motif table.")
-  }
+    stop("Could not find a recognition-sequence field in the motif table.")}
   names(df)[motif_idx[1]] <- "motif"
-
+  # add missing columns with NA values
   defaults <- c("enz_type", "meth_base", "meth_type", "comp_meth_base", "comp_meth_type")
   current <- tolower(names(df))
   for (column in defaults) {
@@ -78,23 +64,19 @@ normalize_motif_columns <- function(df) {
       current <- c(current, column)
     }
   }
-
-  df
+  return(df[, c("motif", "enz_type", "meth_base", "meth_type", "comp_meth_base", "comp_meth_type")])
 }
 
 parse_rebase_record <- function(chunk) {
   matches <- gregexpr("<([A-Za-z0-9_\\-]+)>([^<>]*)", chunk, perl = TRUE)
   tokens <- regmatches(chunk, matches)[[1]]
   if (length(tokens) == 0) {
-    return(NULL)
-  }
-
+    return(NULL)}
+  # parse the tokens into a named list of fields
   fields <- list()
   for (token in tokens) {
     parsed <- regmatches(token, regexec("<([A-Za-z0-9_\\-]+)>([^<>]*)", token, perl = TRUE))[[1]]
-    if (length(parsed) < 3) {
-      next
-    }
+    if (length(parsed) < 3) {next}
     fields[[parsed[2]]] <- parsed[3]
   }
 
@@ -115,15 +97,11 @@ parse_rebase_record <- function(chunk) {
 
 parse_rebase_motifs <- function(text) {
   chunks <- strsplit(text, "<>", fixed = TRUE)[[1]]
+  if (length(chunks) == 0) {return(list())}
   chunks <- trimws(chunks)
   chunks <- chunks[nzchar(chunks)]
-  if (length(chunks) == 0) {
-    return(list())
-  }
-
   parsed <- lapply(chunks, parse_rebase_record)
-  Filter(Negate(is.null), parsed)
-}
+  Filter(Negate(is.null), parsed)}
 
 parse_motif_text <- function(text) {
   if (is.null(text)) {
