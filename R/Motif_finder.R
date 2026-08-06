@@ -4,6 +4,61 @@
 # complement orientations and return their genomic coordinates for downstream
 # mutation or annotation workflows.
 
+iupac_complements <- c(
+  A = "T", C = "G", G = "C", T = "A",
+  R = "Y", Y = "R", S = "S", W = "W",
+  K = "M", M = "K", B = "V", V = "B",
+  D = "H", H = "D", N = "N"
+)
+
+iupac_regex_values <- c(
+  A = "A", C = "C", G = "G", T = "T",
+  R = "[AG]", Y = "[CT]", S = "[GC]", W = "[AT]",
+  K = "[GT]", M = "[AC]", B = "[CGT]", D = "[AGT]",
+  H = "[ACT]", V = "[ACG]", N = "[ACGT]"
+)
+
+extract_sequence_interval <- function(sequence, start, end, circular = FALSE) {
+  sequence <- as.character(sequence)
+  sequence_length <- nchar(sequence)
+  if (sequence_length == 0) {
+    return("")
+  }
+
+  if (!circular) {
+    start <- max(1, start)
+    end <- min(sequence_length, end)
+    if (start > end) {
+      return("")
+    }
+    return(substr(sequence, start, end))
+  }
+
+  start <- ((start - 1) %% sequence_length) + 1
+  end <- ((end - 1) %% sequence_length) + 1
+  if (start <= end) {
+    return(substr(sequence, start, end))
+  }
+
+  paste0(substr(sequence, start, sequence_length), substr(sequence, 1, end))
+}
+
+iupac_to_regex <- function(pattern) {
+  pattern <- toupper(as.character(pattern))
+  paste(vapply(strsplit(pattern, "", fixed = TRUE)[[1]], function(base) {
+    iupac_regex_values[[base]] %||% base
+  }, character(1)), collapse = "")
+}
+
+reverse_complement_iupac <- function(sequence) {
+  sequence <- toupper(as.character(sequence))
+  chars <- strsplit(sequence, "", fixed = TRUE)[[1]]
+  complements <- vapply(chars, function(base) {
+    iupac_complements[[base]] %||% "N"
+  }, character(1))
+  paste(rev(complements), collapse = "")
+}
+
 reverse_complement <- function(sequence) {
   if (is.null(sequence)) {
     stop("Sequence input is empty.")
@@ -28,7 +83,8 @@ reverse_complement <- function(sequence) {
   paste(rev(complement), collapse = "")
 }
 
-find_motifs <- function(sequence, motifs, include_reverse = TRUE) {
+find_motifs <- function(sequence, motifs, include_reverse = TRUE, topology = c("linear", "circular")) {
+  topology <- match.arg(topology)
   if (is.null(sequence) || is.na(sequence) || !nzchar(trimws(as.character(sequence)))) {
     stop("Sequence input is empty.")
   }
@@ -57,9 +113,9 @@ find_motifs <- function(sequence, motifs, include_reverse = TRUE) {
     }
 
     search_results <- list()
-    search_results[[1]] <- .find_motif_matches(sequence, motif, "+")
+    search_results[[1]] <- .find_motif_matches(sequence, motif, "+", topology = topology)
     if (include_reverse) {
-      search_results[[2]] <- .find_motif_matches(sequence, motif, "-")
+      search_results[[2]] <- .find_motif_matches(sequence, motif, "-", topology = topology)
     }
 
     do.call(rbind, Filter(function(x) !is.null(x), search_results))
@@ -73,16 +129,18 @@ find_motifs <- function(sequence, motifs, include_reverse = TRUE) {
   do.call(rbind, rows)
 }
 
-.find_motif_matches <- function(sequence, motif, strand) {
-  if (strand == "-") {
-    search_sequence <- reverse_complement(sequence)
-    start_offset <- 0
-  } else {
-    search_sequence <- sequence
-    start_offset <- 0
+.find_motif_matches <- function(sequence, motif, strand, topology = c("linear", "circular")) {
+  topology <- match.arg(topology)
+  search_pattern <- if (strand == "-") reverse_complement_iupac(motif) else motif
+  regex <- iupac_to_regex(search_pattern)
+
+  search_sequence <- toupper(as.character(sequence))
+  sequence_length <- nchar(search_sequence)
+  if (topology == "circular") {
+    search_sequence <- paste0(search_sequence, substr(search_sequence, 1, max(0, nchar(motif) - 1)))
   }
 
-  match_positions <- gregexpr(motif, search_sequence, ignore.case = TRUE, perl = TRUE)[[1]]
+  match_positions <- gregexpr(regex, search_sequence, ignore.case = TRUE, perl = TRUE)[[1]]
   if (length(match_positions) == 1 && match_positions[1] == -1) {
     return(NULL)
   }
@@ -96,22 +154,34 @@ find_motifs <- function(sequence, motifs, include_reverse = TRUE) {
   entries <- lapply(seq_along(matches), function(i) {
     start <- matches[i]
     end <- start + lengths[i] - 1
-    if (strand == "-") {
-      start_in_original <- nchar(sequence) - end + 1
-      end_in_original <- nchar(sequence) - start + 1
-      strand_value <- "-"
+    if (topology == "circular") {
+      if (start > sequence_length) {
+        return(NULL)
+      }
+      if (strand == "-") {
+        start_in_original <- sequence_length - end + 1
+        end_in_original <- sequence_length - start + 1
+      } else {
+        start_in_original <- start
+        end_in_original <- end
+      }
+    } else if (strand == "-") {
+      start_in_original <- sequence_length - end + 1
+      end_in_original <- sequence_length - start + 1
     } else {
       start_in_original <- start
       end_in_original <- end
-      strand_value <- "+"
     }
+
+    strand_value <- strand
+    match_sequence <- extract_sequence_interval(sequence, start_in_original, end_in_original, circular = topology == "circular")
 
     data.frame(
       motif = motif,
       start = start_in_original,
       end = end_in_original,
       strand = strand_value,
-      match = substr(sequence, start_in_original, end_in_original),
+      match = match_sequence,
       stringsAsFactors = FALSE
     )
   })
