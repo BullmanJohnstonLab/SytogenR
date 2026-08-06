@@ -34,4 +34,23 @@ if (nrow(result$decision_matrix) > 0 && any(result$decision_matrix$edit_position
 }
 stopifnot(any(result$decision_matrix$skip_reason == "type_iv"))
 
+record_input <- list(
+  sequence = sequence,
+  id = "record_1",
+  features = data.frame(
+    type = c("CDS", "misc_feature"),
+    start = c(1L, 2L),
+    end = c(12L, 2L),
+    strand = c("+", "+"),
+    gene = c("bla", ""),
+    stringsAsFactors = FALSE
+  )
+)
+
+record_result <- run_sytogen_pipeline(record_input, codon_df = cds_df, motif_df = motif_df, params = list(topology = "linear", preserve_gc = TRUE))
+
+stopifnot(record_result$summary$sequence_id == "record_1")
+stopifnot(nrow(record_result$decision_matrix) >= 1)
+stopifnot(length(record_result$motif_hits) >= 1)
+
 cat("All SyToGen pipeline tests passed.\n")
