@@ -228,8 +228,12 @@ sio_find_partial_protein_match <- function(protein_sequence, dna_sequence, min_f
 
 sio_disambiguate_hits <- function(candidates, policy = c("best", "strict", "all"), gene_id = NULL) {
   policy <- match.arg(policy)
-  if (length(candidates) == 0) return(list())
-  if (policy == "all" || length(candidates) == 1) return(candidates)
+  if (length(candidates) == 0) {
+    return(list())
+  }
+  if (policy == "all" || length(candidates) == 1) {
+    return(candidates)
+  }
 
   if (policy == "strict" && length(candidates) > 1) {
     warning(sprintf(
@@ -261,8 +265,12 @@ sio_find_protein_match <- function(protein_sequence, dna_sequence, topology = "l
   }
 
   result <- sio_disambiguate_hits(all_hits, policy = policy, gene_id = NULL)
-  if (length(result) == 0) return(NULL)
-  if (policy %in% c("all", "strict")) return(result)
+  if (length(result) == 0) {
+    return(NULL)
+  }
+  if (policy %in% c("all", "strict")) {
+    return(result)
+  }
   result[[1]]
 }
 
@@ -655,7 +663,7 @@ parse_genbank_text <- function(text) {
       gene_name <- note_value
     }
     for (i in seq_len(nrow(rows))) {
-      feature_rows[[length(feature_rows) + 1]] <<- data.frame(
+      feature_rows[[length(feature_rows) + 1]] <<- data.frame( # nolint: assignment_linter.
         type = current_type,
         start = as.integer(rows$start[i]),
         end = as.integer(rows$end[i]),

@@ -75,7 +75,8 @@ writeLines(c(">genome_partial", "ATGGCTGCTTAA"), fna_partial)
 writeLines(c(">geneC", "MAAK"), faa_partial)
 
 record_partial <- protein_fasta_to_genbank(
-  faa_partial, fna_partial, allow_partial = TRUE, min_partial_fraction = 0.5
+  faa_partial, fna_partial,
+  allow_partial = TRUE, min_partial_fraction = 0.5
 )
 stopifnot(nrow(record_partial$features) == 1)
 stopifnot(record_partial$features$type[1] == "CDS_partial")
