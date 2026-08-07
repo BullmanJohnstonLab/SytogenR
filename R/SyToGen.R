@@ -291,16 +291,16 @@ sytogen_parse_codon_usage <- function(codon_df, fallback_sequence = NULL) {
     return(numeric())
   }
   invert <- tolower(score_col) %in% c("ranking", "ranking_ratio")
-  usage <- numeric()
-  for (i in seq_len(nrow(codon_df))) {
-    codon <- toupper(trimws(as.character(codon_df[[codon_col]][i])))
-    value <- suppressWarnings(as.numeric(codon_df[[score_col]][i]))
-    if (!nzchar(codon) || is.na(value)) {
-      next
-    }
-    usage[[codon]] <- if (invert) -value else value
+
+  codons <- toupper(trimws(as.character(codon_df[[codon_col]])))
+  values <- suppressWarnings(as.numeric(codon_df[[score_col]]))
+  keep <- nzchar(codons) & !is.na(values)
+  if (!any(keep)) {
+    return(numeric())
   }
-  usage
+
+  usage <- stats::setNames(if (invert) -values[keep] else values[keep], codons[keep])
+  usage[!duplicated(names(usage), fromLast = TRUE)]
 }
 
 sytogen_parse_motif_table <- function(motif_df, sequence, topology = "circular") {
@@ -328,53 +328,46 @@ sytogen_parse_motif_table <- function(motif_df, sequence, topology = "circular")
     enz_col <- names(motif_df)[match("type", column_names)]
   }
 
-  rows <- list()
-  seen <- new.env(parent = emptyenv())
-  for (i in seq_len(nrow(motif_df))) {
-    motif <- toupper(trimws(as.character(motif_df[[motif_col]][i])))
-    if (!nzchar(motif)) {
-      next
-    }
-    strand <- if (!is.na(strand_col)) as.character(motif_df[[strand_col]][i]) else "+"
-    strand <- ifelse(nzchar(trimws(strand)), strand, "+")
-    enz_type <- if (!is.na(enz_col)) as.character(motif_df[[enz_col]][i]) else ""
+  rows <- Filter(
+    Negate(is.null),
+    lapply(seq_len(nrow(motif_df)), function(i) {
+      motif <- toupper(trimws(as.character(motif_df[[motif_col]][i])))
+      if (!nzchar(motif)) {
+        return(NULL)
+      }
+      strand <- if (!is.na(strand_col)) as.character(motif_df[[strand_col]][i]) else "+"
+      strand <- ifelse(nzchar(trimws(strand)), strand, "+")
+      enz_type <- if (!is.na(enz_col)) as.character(motif_df[[enz_col]][i]) else ""
 
-    if (!is.na(start_col) && !is.na(end_col) && !is.na(motif_df[[start_col]][i]) && !is.na(motif_df[[end_col]][i])) {
-      start <- as.integer(motif_df[[start_col]][i])
-      end <- as.integer(motif_df[[end_col]][i])
-      key <- paste(motif, start, end, strand, sep = "|")
-      if (is.null(seen[[key]])) {
-        seen[[key]] <- TRUE
-        rows[[length(rows) + 1]] <- data.frame(
+      if (!is.na(start_col) && !is.na(end_col) && !is.na(motif_df[[start_col]][i]) && !is.na(motif_df[[end_col]][i])) {
+        start <- as.integer(motif_df[[start_col]][i])
+        end <- as.integer(motif_df[[end_col]][i])
+        return(data.frame(
           motif = motif,
           start = start,
           end = end,
           strand = strand,
           enz_type = enz_type,
           stringsAsFactors = FALSE
-        )
+        ))
       }
-    } else {
+
       hits <- sytogen_find_motifs(sequence, c(motif), include_reverse = TRUE, topology = topology)
       if (nrow(hits) == 0) {
-        next
+        return(NULL)
       }
-      for (j in seq_len(nrow(hits))) {
-        key <- paste(hits$motif[j], hits$start[j], hits$end[j], hits$strand[j], sep = "|")
-        if (is.null(seen[[key]])) {
-          seen[[key]] <- TRUE
-          rows[[length(rows) + 1]] <- data.frame(
-            motif = hits$motif[j],
-            start = hits$start[j],
-            end = hits$end[j],
-            strand = hits$strand[j],
-            enz_type = enz_type,
-            stringsAsFactors = FALSE
-          )
-        }
-      }
-    }
-  }
+      do.call(rbind, lapply(seq_len(nrow(hits)), function(j) {
+        data.frame(
+          motif = hits$motif[j],
+          start = hits$start[j],
+          end = hits$end[j],
+          strand = hits$strand[j],
+          enz_type = enz_type,
+          stringsAsFactors = FALSE
+        )
+      }))
+    })
+  )
 
   if (length(rows) == 0) {
     return(data.frame(
@@ -386,7 +379,10 @@ sytogen_parse_motif_table <- function(motif_df, sequence, topology = "circular")
       stringsAsFactors = FALSE
     ))
   }
-  do.call(rbind, rows)
+
+  combined <- do.call(rbind, rows)
+  keys <- paste(combined$motif, combined$start, combined$end, combined$strand, sep = "|")
+  combined[!duplicated(keys), , drop = FALSE]
 }
 
 sytogen_is_type_iv_motif <- function(motif_row) {
@@ -422,6 +418,177 @@ sytogen_candidate_hits_created <- function(original_sequence, mutated_sequence, 
     }
   }
   unique(created)
+}
+
+sytogen_make_candidate_row <- function(
+  hit,
+  edit_position,
+  before,
+  after,
+  original_codon = "",
+  replacement_codon = "",
+  aa_letter_code = "",
+  synonymous = FALSE,
+  reasoning = "",
+  usage_score = 0,
+  gc_preserving = FALSE,
+  total_score = 0
+) {
+  data.frame(
+    motif = hit$motif,
+    motif_start = hit$start,
+    motif_end = hit$end,
+    motif_strand = hit$strand,
+    edit_position = edit_position,
+    before = before,
+    after = after,
+    original_codon = original_codon,
+    replacement_codon = replacement_codon,
+    AA_LetterCode = aa_letter_code,
+    synonymous = synonymous,
+    motifs_destroyed = 1,
+    reasoning = reasoning,
+    motifs_created = 0,
+    usage_score = usage_score,
+    gc_preserving = gc_preserving,
+    total_score = total_score,
+    chosen = FALSE,
+    skip_reason = "",
+    attempted_count = 1,
+    rejected_count = 0,
+    top_rejection_reason = "",
+    top_rejection_count = 0,
+    stringsAsFactors = FALSE
+  )
+}
+
+sytogen_build_hit_candidates <- function(
+  hit,
+  working_sequence,
+  motif_list,
+  cds_ranges,
+  protected_ranges,
+  codon_usage,
+  preserve_gc,
+  topology
+) {
+  position_candidates <- lapply(seq(hit$start, hit$end), function(position) {
+    if (sytogen_position_in_ranges(position, protected_ranges)) {
+      return(NULL)
+    }
+
+    if (sytogen_position_in_ranges(position, cds_ranges)) {
+      codon_window <- locate_codon_window(position, cds_ranges)
+      if (is.null(codon_window)) {
+        return(NULL)
+      }
+      original_codon <- substr(working_sequence, codon_window$start, codon_window$end)
+      if (
+        !nzchar(original_codon) ||
+          nchar(original_codon) != 3 ||
+          !original_codon %in% names(sytogen_standard_genetic_code())
+      ) {
+        return(NULL)
+      }
+
+      aa <- sytogen_standard_genetic_code()[[original_codon]]
+      synonymous_codons <- names(sytogen_standard_genetic_code())[
+        sytogen_standard_genetic_code() == aa &
+          names(sytogen_standard_genetic_code()) != original_codon
+      ]
+
+      return(Filter(Negate(is.null), lapply(synonymous_codons, function(replacement_codon) {
+        diff_positions <- which(
+          strsplit(original_codon, "", fixed = TRUE)[[1]] !=
+            strsplit(replacement_codon, "", fixed = TRUE)[[1]]
+        )
+        if (length(diff_positions) != 1) {
+          return(NULL)
+        }
+
+        mutation_position <- codon_window$start + diff_positions[1] - 1
+        old_base <- substr(working_sequence, mutation_position, mutation_position)
+        new_base <- substr(replacement_codon, diff_positions[1], diff_positions[1])
+        mutated_sequence <- mutate_base_at(working_sequence, mutation_position, new_base)
+        if (!sytogen_exact_motif_destroyed(working_sequence, mutated_sequence, hit)) {
+          return(NULL)
+        }
+        created_patterns <- sytogen_candidate_hits_created(
+          working_sequence,
+          mutated_sequence,
+          motif_list,
+          topology = topology
+        )
+        if (length(created_patterns) > 0) {
+          return(NULL)
+        }
+
+        usage_score <- if (
+          length(codon_usage) > 0 &&
+            replacement_codon %in% names(codon_usage)
+        ) {
+          as.numeric(codon_usage[[replacement_codon]])
+        } else {
+          0
+        }
+        gc_preserving <- base_class(old_base) == base_class(new_base)
+        total_score <- 1000 + usage_score * 100 - 10 +
+          if (preserve_gc && gc_preserving) 5 else 0
+
+        sytogen_make_candidate_row(
+          hit = hit,
+          edit_position = mutation_position,
+          before = old_base,
+          after = new_base,
+          original_codon = original_codon,
+          replacement_codon = replacement_codon,
+          aa_letter_code = aa,
+          synonymous = TRUE,
+          reasoning = "Synonymous coding edit",
+          usage_score = usage_score,
+          gc_preserving = gc_preserving,
+          total_score = total_score
+        )
+      })))
+    }
+
+    old_base <- substr(working_sequence, position, position)
+    return(Filter(Negate(is.null), lapply(setdiff(c("A", "C", "G", "T"), old_base), function(new_base) {
+      mutated_sequence <- mutate_base_at(working_sequence, position, new_base)
+      if (!sytogen_exact_motif_destroyed(working_sequence, mutated_sequence, hit)) {
+        return(NULL)
+      }
+      created_patterns <- sytogen_candidate_hits_created(
+        working_sequence,
+        mutated_sequence,
+        motif_list,
+        topology = topology
+      )
+      if (length(created_patterns) > 0) {
+        return(NULL)
+      }
+
+      gc_preserving <- base_class(old_base) == base_class(new_base)
+      total_score <- 100 + if (preserve_gc && gc_preserving) 5 else 0
+
+      sytogen_make_candidate_row(
+        hit = hit,
+        edit_position = position,
+        before = old_base,
+        after = new_base,
+        synonymous = FALSE,
+        reasoning = "Non-coding edit",
+        gc_preserving = gc_preserving,
+        total_score = total_score
+      )
+    })))
+  })
+
+  candidate_rows <- Filter(Negate(is.null), unlist(position_candidates, recursive = FALSE))
+  if (length(candidate_rows) == 0) {
+    return(NULL)
+  }
+  do.call(rbind, candidate_rows)
 }
 
 sytogen_collect_decisions <- function(
@@ -491,156 +658,18 @@ sytogen_collect_decisions <- function(
       next
     }
 
-    candidate_rows <- list()
-    candidate_scores <- numeric()
-    candidate_counter <- 1
-    for (position in seq(hit$start, hit$end)) {
-      if (sytogen_position_in_ranges(position, protected_ranges)) {
-        next
-      }
-      if (sytogen_position_in_ranges(position, cds_ranges)) {
-        codon_window <- locate_codon_window(position, cds_ranges)
-        if (is.null(codon_window)) {
-          next
-        }
-        original_codon <- substr(
-          working_sequence,
-          codon_window$start,
-          codon_window$end
-        )
-        if (
-          !nzchar(original_codon) ||
-            nchar(original_codon) != 3 ||
-            !original_codon %in% names(sytogen_standard_genetic_code())
-        ) {
-          next
-        }
-        aa <- sytogen_standard_genetic_code()[[original_codon]]
-        synonymous_codons <- names(sytogen_standard_genetic_code())[
-          sytogen_standard_genetic_code() == aa &
-            names(sytogen_standard_genetic_code()) != original_codon
-        ]
-        for (replacement_codon in synonymous_codons) {
-          diff_positions <- which(
-            strsplit(original_codon, "", fixed = TRUE)[[1]] !=
-              strsplit(replacement_codon, "", fixed = TRUE)[[1]]
-          )
-          if (length(diff_positions) != 1) {
-            next
-          }
-          mutation_position <- codon_window$start + diff_positions[1] - 1
-          old_base <- substr(
-            working_sequence,
-            mutation_position,
-            mutation_position
-          )
-          new_base <- substr(replacement_codon, diff_positions[1], diff_positions[1])
-          mutated_sequence <- mutate_base_at(
-            working_sequence,
-            mutation_position,
-            new_base
-          )
-          if (!sytogen_exact_motif_destroyed(working_sequence, mutated_sequence, hit)) {
-            next
-          }
-          created_patterns <- sytogen_candidate_hits_created(
-            working_sequence,
-            mutated_sequence,
-            motif_list,
-            topology = topology
-          )
-          if (length(created_patterns) > 0) {
-            next
-          }
-          usage_score <- if (
-            length(codon_usage) > 0 &&
-              replacement_codon %in% names(codon_usage)
-          ) {
-            as.numeric(codon_usage[[replacement_codon]])
-          } else {
-            0
-          }
-          gc_preserving <- base_class(old_base) == base_class(new_base)
-          total_score <- 1000 + usage_score * 100 - 10 +
-            if (preserve_gc && gc_preserving) 5 else 0
-          candidate_rows[[candidate_counter]] <- data.frame(
-            motif = hit$motif,
-            motif_start = hit$start,
-            motif_end = hit$end,
-            motif_strand = hit$strand,
-            edit_position = mutation_position,
-            before = old_base,
-            after = new_base,
-            original_codon = original_codon,
-            replacement_codon = replacement_codon,
-            AA_LetterCode = aa,
-            synonymous = TRUE,
-            motifs_destroyed = 1,
-            reasoning = "Synonymous coding edit",
-            motifs_created = 0,
-            usage_score = usage_score,
-            gc_preserving = gc_preserving,
-            total_score = total_score,
-            chosen = FALSE,
-            skip_reason = "",
-            attempted_count = 1,
-            rejected_count = 0,
-            top_rejection_reason = "",
-            top_rejection_count = 0,
-            stringsAsFactors = FALSE)
-          candidate_scores[candidate_counter] <- total_score
-          candidate_counter <- candidate_counter + 1
-        }
-      } else {
-        old_base <- substr(working_sequence, position, position)
-        for (new_base in setdiff(c("A", "C", "G", "T"), old_base)) {
-          mutated_sequence <- mutate_base_at(working_sequence, position, new_base)
-          if (!sytogen_exact_motif_destroyed(working_sequence, mutated_sequence, hit)) {
-            next
-          }
-          created_patterns <- sytogen_candidate_hits_created(
-            working_sequence,
-            mutated_sequence,
-            motif_list,
-            topology = topology
-          )
-          if (length(created_patterns) > 0) {
-            next
-          }
-          gc_preserving <- base_class(old_base) == base_class(new_base)
-          total_score <- 100 + if (preserve_gc && gc_preserving) 5 else 0
-          candidate_rows[[candidate_counter]] <- data.frame(motif = hit$motif,
-          motif_start = hit$start,
-          motif_end = hit$end,
-            motif_strand = hit$strand,
-            edit_position = position,
-            before = old_base,
-            after = new_base,
-            original_codon = "",
-            replacement_codon = "",
-            AA_LetterCode = "",
-            synonymous = FALSE,
-            motifs_destroyed = 1,
-            reasoning = "Non-coding edit",
-            motifs_created = 0,
-            usage_score = 0,
-            gc_preserving = gc_preserving,
-            total_score = total_score,
-            chosen = FALSE,
-            skip_reason = "",
-            attempted_count = 1,
-            rejected_count = 0,
-            top_rejection_reason = "",
-            top_rejection_count = 0,
-            stringsAsFactors = FALSE
-          )
-          candidate_scores[candidate_counter] <- total_score
-          candidate_counter <- candidate_counter + 1
-        }
-      }
-    }
+    candidate_df <- sytogen_build_hit_candidates(
+      hit = hit,
+      working_sequence = working_sequence,
+      motif_list = motif_list,
+      cds_ranges = cds_ranges,
+      protected_ranges = protected_ranges,
+      codon_usage = codon_usage,
+      preserve_gc = preserve_gc,
+      topology = topology
+    )
 
-    if (length(candidate_rows) == 0) {
+    if (is.null(candidate_df)) {
       decision_rows[[row_index]] <- data.frame(
         motif = hit$motif,
         motif_start = hit$start,
@@ -671,7 +700,6 @@ sytogen_collect_decisions <- function(
       next
     }
 
-    candidate_df <- do.call(rbind, candidate_rows)
     best_idx <- order(-candidate_df$total_score, candidate_df$edit_position)[1]
     candidate_df$chosen <- FALSE
     candidate_df$chosen[best_idx] <- TRUE
