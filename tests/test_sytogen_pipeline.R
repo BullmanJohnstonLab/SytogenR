@@ -53,4 +53,20 @@ stopifnot(record_result$summary$sequence_id == "record_1")
 stopifnot(nrow(record_result$decision_matrix) >= 1)
 stopifnot(length(record_result$motif_hits) >= 1)
 
+aliased_record <- list(
+  seq = sequence,
+  seqid = "record_2",
+  features = list(
+    list(type = "CDS", start = 1L, end = 12L, strand = "+", gene = "bla"),
+    list(feature_type = "misc_feature", from = 2L, to = 2L, strand = "+", id = "site")
+  )
+)
+
+normalized_record <- sytogen_normalize_seq_record(aliased_record)
+
+stopifnot(normalized_record$id == "record_2")
+stopifnot(normalized_record$sequence == sequence)
+stopifnot(nrow(normalized_record$features) == 2)
+stopifnot(all(normalized_record$features$type == c("CDS", "misc_feature")))
+
 cat("All SyToGen pipeline tests passed.\n")
