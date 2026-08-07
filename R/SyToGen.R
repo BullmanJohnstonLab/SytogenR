@@ -61,42 +61,117 @@ sytogen_parse_genbank_file <- function(path) {
     annotations = parsed$annotations %||% list(molecule_type = "DNA"),
     format = "genbank")}
 
-sytogen_normalize_seq_record <- function(seq_record) {
-  input_type <- sytogen_detect_input_type(seq_record)
-  if (input_type == "file") {
-    ext <- tolower(tools::file_ext(seq_record))
-    if (ext %in% c("fa", "fasta", "fna")) {
-      return(sytogen_parse_fasta_file(seq_record))}
-    if (ext %in% c("gb", "gbk", "genbank", "gp", "gbff")) {
-      return(sytogen_parse_genbank_file(seq_record))}
-    return(list(
-      sequence = sytogen_clean_sequence(readChar(seq_record, file.info(seq_record)$size)),
-      id = basename(seq_record),
-      features = data.frame(),
-      annotations = list(molecule_type = "DNA"),
-      format = "sequence"))}
-  if (input_type == "record") {
-    sequence_value <- seq_record$sequence %||% seq_record$seq %||% seq_record$dna %||% seq_record$dna_sequence
-    if (is.null(sequence_value)) {
-      stop("Record input is missing a sequence field.")}
-    features_value <- seq_record$features %||% data.frame()
-    if (is.list(features_value) && !is.data.frame(features_value)) {
-      features_value <- do.call(rbind, lapply(features_value, function(feature) {
+sytogen_normalize_feature_table <- function(features_value) {
+  empty_table <- data.frame(
+    type = character(),
+    start = integer(),
+    end = integer(),
+    strand = character(),
+    gene = character(),
+    stringsAsFactors = FALSE
+  )
+
+  if (is.null(features_value)) {
+    return(empty_table)
+  }
+
+  if (is.data.frame(features_value)) {
+    return(features_value)
+  }
+
+  if (!is.list(features_value) || length(features_value) == 0) {
+    return(empty_table)
+  }
+
+  if (requireNamespace("purrr", quietly = TRUE)) {
+    return(purrr::map_dfr(
+      purrr::keep(features_value, is.list),
+      function(feature) {
         data.frame(
           type = as.character(feature$type %||% feature$feature_type %||% ""),
           start = as.integer(feature$start %||% feature$from %||% NA_integer_),
           end = as.integer(feature$end %||% feature$to %||% NA_integer_),
           strand = as.character(feature$strand %||% "+"),
           gene = as.character(feature$gene %||% feature$id %||% ""),
-          stringsAsFactors = FALSE)}))}
+          stringsAsFactors = FALSE
+        )
+      }
+    ))
+  }
+
+  feature_count <- length(features_value)
+  type_values <- character(feature_count)
+  start_values <- integer(feature_count)
+  end_values <- integer(feature_count)
+  strand_values <- character(feature_count)
+  gene_values <- character(feature_count)
+
+  for (i in seq_len(feature_count)) {
+    feature <- features_value[[i]]
+    if (is.null(feature)) {
+      next
+    }
+
+    type_values[i] <- as.character(feature$type %||% feature$feature_type %||% "")
+    start_values[i] <- as.integer(feature$start %||% feature$from %||% NA_integer_)
+    end_values[i] <- as.integer(feature$end %||% feature$to %||% NA_integer_)
+    strand_values[i] <- as.character(feature$strand %||% "+")
+    gene_values[i] <- as.character(feature$gene %||% feature$id %||% "")
+  }
+
+  data.frame(
+    type = type_values,
+    start = start_values,
+    end = end_values,
+    strand = strand_values,
+    gene = gene_values,
+    stringsAsFactors = FALSE
+  )
+}
+
+sytogen_normalize_seq_record <- function(seq_record) {
+  input_type <- sytogen_detect_input_type(seq_record)
+
+  if (input_type == "file") {
+    ext <- tolower(tools::file_ext(seq_record))
+    file_parser <- if (ext %in% c("fa", "fasta", "fna")) {
+      sytogen_parse_fasta_file
+    } else if (ext %in% c("gb", "gbk", "genbank", "gp", "gbff")) {
+      sytogen_parse_genbank_file
+    } else {
+      NULL
+    }
+
+    if (!is.null(file_parser)) {
+      return(file_parser(seq_record))
+    }
+
+    return(list(
+      sequence = sytogen_clean_sequence(readChar(seq_record, file.info(seq_record)$size)),
+      id = basename(seq_record),
+      features = data.frame(),
+      annotations = list(molecule_type = "DNA"),
+      format = "sequence"
+    ))
+  }
+
+  if (input_type == "record") {
+    sequence_value <- seq_record$sequence %||% seq_record$seq %||% seq_record$dna %||% seq_record$dna_sequence
+    if (is.null(sequence_value)) {
+      stop("Record input is missing a sequence field.")
+    }
+
+    features_value <- sytogen_normalize_feature_table(seq_record$features %||% data.frame())
+
     return(list(
       sequence = sytogen_clean_sequence(sequence_value),
       id = seq_record$id %||% seq_record$name %||% seq_record$seqid %||% "sequence",
-      features = if (is.data.frame(features_value)) features_value else data.frame(),
+      features = features_value,
       annotations = seq_record$annotations %||% list(molecule_type = "DNA"),
       format = "record"
     ))
   }
+
   list(
     sequence = sytogen_clean_sequence(seq_record),
     id = "sequence",
@@ -859,20 +934,26 @@ apply_non_overlapping_mutations <- function(sequence, decision_matrix) {
     return(sequence)
   }
 
-  ordered <- decision_matrix[order(-decision_matrix$score, decision_matrix$mutation_position), , drop = FALSE]
-  used_positions <- integer(0)
-  mutated <- sequence
+  ordered <- decision_matrix[
+    order(-decision_matrix$score, decision_matrix$mutation_position),
+    ,
+    drop = FALSE
+  ]
+  positions <- as.integer(ordered$mutation_position)
+  bases <- as.character(ordered$to_base)
 
-  for (i in seq_len(nrow(ordered))) {
-    pos <- as.integer(ordered$mutation_position[i])
-    if (pos %in% used_positions) {
-      next
-    }
-    mutated <- mutate_base_at(mutated, pos, as.character(ordered$to_base[i]))
-    used_positions <- c(used_positions, pos)
+  keep <- !duplicated(positions)
+  if (!any(keep)) {
+    return(sequence)
   }
 
-  mutated
+  Reduce(
+    function(current_sequence, index) {
+      mutate_base_at(current_sequence, positions[index], bases[index])
+    },
+    which(keep),
+    init = sequence
+  )
 }
 
 sytogen_build_motif_summary <- function(motif_hits, resolved_motif_keys) {
@@ -937,6 +1018,94 @@ sytogen_build_motif_summary <- function(motif_hits, resolved_motif_keys) {
   do.call(rbind, rows)
 }
 
+sytogen_validate_topology <- function(topology) {
+  topology <- tolower(as.character(topology %||% "circular"))
+  if (!topology %in% c("linear", "circular")) {
+    stop("topology must be 'linear' or 'circular'.")
+  }
+  topology
+}
+
+sytogen_prepare_motif_df <- function(motif_df) {
+  if (is.null(motif_df)) {
+    stop("motif_df is required.")
+  }
+
+  motif_df <- as.data.frame(motif_df, stringsAsFactors = FALSE)
+  if (!"motif" %in% names(motif_df)) {
+    stop("Motif table must include a motif column.")
+  }
+
+  if (!"enz_type" %in% names(motif_df)) {
+    motif_df$enz_type <- ""
+  }
+  motif_df$motif <- toupper(trimws(as.character(motif_df$motif)))
+  motif_df
+}
+
+sytogen_prepare_pipeline_ranges <- function(record, params, sequence_length) {
+  feature_cds_ranges <- sytogen_features_to_ranges(
+    record$features,
+    c("CDS", "ORF", "Marker"),
+    skip_motif_hits = FALSE
+  )
+  feature_protected_ranges <- sytogen_features_to_ranges(
+    record$features,
+    c("regulatory", "misc_feature", "rep_origin", "promoter", "rbs"),
+    skip_motif_hits = TRUE
+  )
+
+  cds_ranges <- sytogen_normalize_ranges(params$cds_ranges %||% feature_cds_ranges, sequence_length)
+  mask_ranges <- sytogen_normalize_ranges(params$mask_ranges, sequence_length)
+  protected_ranges <- sytogen_normalize_ranges(params$protected_ranges %||% feature_protected_ranges, sequence_length)
+  protected_override_ranges <- sytogen_normalize_ranges(params$protected_override_ranges, sequence_length)
+
+  if (nrow(protected_override_ranges) > 0 && nrow(protected_ranges) > 0) {
+    overlaps <- vapply(seq_len(nrow(protected_ranges)), function(i) {
+      any(
+        protected_ranges$start[i] <= protected_override_ranges$end &
+          protected_ranges$end[i] >= protected_override_ranges$start
+      )
+    }, logical(1))
+    protected_ranges <- protected_ranges[!overlaps, , drop = FALSE]
+  }
+
+  all_protected_ranges <- if (nrow(protected_ranges) == 0) {
+    mask_ranges
+  } else {
+    rbind(protected_ranges, mask_ranges)
+  }
+
+  list(
+    cds_ranges = cds_ranges,
+    mask_ranges = mask_ranges,
+    protected_ranges = protected_ranges,
+    protected_override_ranges = protected_override_ranges,
+    all_protected_ranges = all_protected_ranges
+  )
+}
+
+sytogen_filter_motif_hits <- function(motif_hits, protected_ranges, include_reverse = TRUE) {
+  if (nrow(motif_hits) == 0) {
+    return(motif_hits)
+  }
+
+  if (!is.null(include_reverse) && !isTRUE(include_reverse)) {
+    motif_hits <- motif_hits[motif_hits$strand != "-", , drop = FALSE]
+  }
+
+  if (nrow(motif_hits) == 0 || nrow(protected_ranges) == 0) {
+    return(motif_hits)
+  }
+
+  keep <- !vapply(seq_len(nrow(motif_hits)), function(i) {
+    sytogen_position_in_ranges(motif_hits$start[i], protected_ranges) ||
+      sytogen_position_in_ranges(motif_hits$end[i], protected_ranges)
+  }, logical(1))
+
+  motif_hits[keep, , drop = FALSE]
+}
+
 run_sytogen_pipeline <- function(sequence,
                      codon_df = NULL,
                      motif_df = NULL,
@@ -944,66 +1113,27 @@ run_sytogen_pipeline <- function(sequence,
   record <- sytogen_normalize_seq_record(sequence)
   cleaned_sequence <- record$sequence
   sequence_id <- record$id %||% "sequence"
-  topology <- tolower(as.character(params$topology %||% "circular"))
-  if (!topology %in% c("linear", "circular")) {
-    stop("topology must be 'linear' or 'circular'.")
-  }
+  topology <- sytogen_validate_topology(params$topology)
   preserve_gc <- isTRUE(params$preserve_gc)
   sequence_length <- nchar(cleaned_sequence)
 
-  if (is.null(motif_df)) {
-    stop("motif_df is required.")
-  }
-
-  motif_hits <- sytogen_parse_motif_table(motif_df, cleaned_sequence, topology = topology)
-  if (!is.null(params$include_reverse) && !isTRUE(params$include_reverse)) {
-    motif_hits <- motif_hits[motif_hits$strand != "-", , drop = FALSE]
-  }
+  parsed_motif_df <- sytogen_prepare_motif_df(motif_df)
+  motif_hits <- sytogen_parse_motif_table(parsed_motif_df, cleaned_sequence, topology = topology)
   codon_usage <- sytogen_parse_codon_usage(codon_df, cleaned_sequence)
-  feature_cds_ranges <- sytogen_features_to_ranges(record$features, c("CDS", "ORF", "Marker"), skip_motif_hits = FALSE)
-  feature_protected_ranges <- sytogen_features_to_ranges(
-    record$features,
-    c("regulatory", "misc_feature", "rep_origin", "promoter", "rbs"),
-    skip_motif_hits = TRUE
+
+  range_state <- sytogen_prepare_pipeline_ranges(record, params, sequence_length)
+  motif_hits <- sytogen_filter_motif_hits(
+    motif_hits,
+    range_state$all_protected_ranges,
+    include_reverse = params$include_reverse
   )
-  cds_ranges <- sytogen_normalize_ranges(params$cds_ranges %||% feature_cds_ranges, sequence_length)
-  mask_ranges <- sytogen_normalize_ranges(params$mask_ranges, sequence_length)
-  protected_ranges <- sytogen_normalize_ranges(params$protected_ranges %||% feature_protected_ranges, sequence_length)
-  protected_override_ranges <- sytogen_normalize_ranges(params$protected_override_ranges, sequence_length)
-
-  if (nrow(protected_override_ranges) > 0 && nrow(protected_ranges) > 0) {
-    keep <- logical(nrow(protected_ranges))
-    for (i in seq_len(nrow(protected_ranges))) {
-      keep[i] <- !any(
-        !(
-          protected_ranges$end[i] < protected_override_ranges$start |
-            protected_ranges$start[i] > protected_override_ranges$end
-        )
-      )
-    }
-    protected_ranges <- protected_ranges[keep, , drop = FALSE]
-  }
-
-  all_protected_ranges <- if (nrow(protected_ranges) == 0) mask_ranges else rbind(protected_ranges, mask_ranges)
-  if (nrow(all_protected_ranges) > 0) {
-    motif_hits <- motif_hits[!vapply(seq_len(nrow(motif_hits)), function(i) {
-      sytogen_position_in_ranges(motif_hits$start[i], all_protected_ranges) ||
-        sytogen_position_in_ranges(motif_hits$end[i], all_protected_ranges)
-    }, logical(1)), , drop = FALSE]
-  }
-
-  parsed_motif_df <- motif_df
-  if (is.null(parsed_motif_df$enz_type)) {
-    parsed_motif_df$enz_type <- ""
-  }
-  parsed_motif_df$motif <- toupper(trimws(as.character(parsed_motif_df$motif)))
 
   decisions <- sytogen_collect_decisions(
     sequence = cleaned_sequence,
     motif_hits = motif_hits,
     motif_df = parsed_motif_df,
-    cds_ranges = cds_ranges,
-    protected_ranges = all_protected_ranges,
+    cds_ranges = range_state$cds_ranges,
+    protected_ranges = range_state$all_protected_ranges,
     codon_usage = codon_usage,
     preserve_gc = preserve_gc,
     topology = topology
@@ -1011,20 +1141,21 @@ run_sytogen_pipeline <- function(sequence,
 
   mutated_sequence <- decisions$mutated_sequence
   new_motifs <- decisions$new_motifs
-  motif_summary <- sytogen_build_motif_summary(motif_hits, decisions$resolved_motif_keys)
+  resolved_keys <- unique(decisions$resolved_motif_keys)
+  motif_summary <- sytogen_build_motif_summary(motif_hits, resolved_keys)
   summary <- list(
     sequence_id = sequence_id,
     topology = topology,
     original_length = sequence_length,
     altered_length = nchar(mutated_sequence),
     motifs_input = nrow(motif_hits),
-    motifs_resolved = length(unique(decisions$resolved_motif_keys)),
-    motifs_unresolved = max(0, nrow(motif_hits) - length(unique(decisions$resolved_motif_keys))),
+    motifs_resolved = length(resolved_keys),
+    motifs_unresolved = max(0, nrow(motif_hits) - length(resolved_keys)),
     edits_applied = length(decisions$applied_mutations),
     candidates_total = if (is.null(decisions$decision_matrix)) 0 else nrow(decisions$decision_matrix),
     new_motifs_introduced = length(new_motifs),
-    mask_regions_applied = nrow(mask_ranges),
-    protected_override_ranges_applied = nrow(protected_override_ranges)
+    mask_regions_applied = nrow(range_state$mask_ranges),
+    protected_override_ranges_applied = nrow(range_state$protected_override_ranges)
   )
 
   list(
@@ -1040,8 +1171,8 @@ run_sytogen_pipeline <- function(sequence,
     summary = summary,
     motif_summary = motif_summary,
     assembly_plan = NULL,
-    mask_regions = mask_ranges,
-    protected_override_ranges = protected_override_ranges
+    mask_regions = range_state$mask_ranges,
+    protected_override_ranges = range_state$protected_override_ranges
   )
 }
 

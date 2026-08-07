@@ -7,4 +7,6 @@ Description: Minimal R utilities for parsing motif tables and converting them in
 License: MIT + file LICENSE
 Encoding: UTF-8
 LazyData: true
+Imports:
+	purrr
 RoxygenNote: 7.3.2
