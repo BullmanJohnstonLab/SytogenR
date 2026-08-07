@@ -89,16 +89,15 @@ sytogen_normalize_feature_table <- function(features_value) {
 
 sytogen_pick_first <- function(source, field_names, default = NULL) {
   values <- purrr::compact(purrr::map(field_names, ~ purrr::pluck(source, .x, .default = NULL)))
-  if (!length(values)) {
-    return(default)
-  }
-
-  values[[1]]
-}
+  if (!length(values)) {return(default)}
+  else if (length(values) > 1) {
+    warning(sprintf("Multiple fields found in source; using the first one: %s", paste(field_names, collapse = ", ")), call. = FALSE)
+  } 
+  return(values[[1]])}
 
 sytogen_normalize_seq_record <- function(seq_record) {
   input_type <- sytogen_detect_input_type(seq_record)
-
+  # If the input is a file, determine the file type and parse accordingly
   if (input_type == "file") {
     ext <- tolower(tools::file_ext(seq_record))
     file_parser <- if (ext %in% c("fa", "fasta", "fna")) {
@@ -151,47 +150,36 @@ sytogen_normalize_seq_record <- function(seq_record) {
 sytogen_feature_is_motif_hit <- function(feature_row) {
   feature_type <- tolower(as.character(feature_row$type %||% ""))
   gene_label <- tolower(as.character(feature_row$gene %||% ""))
-  grepl("motif", feature_type) || grepl("motif_hit_", gene_label)
-}
+  grepl("motif", feature_type) || grepl("motif_hit_", gene_label)}
 
 sytogen_features_to_ranges <- function(features, feature_types, skip_motif_hits = FALSE) {
   if (is.null(features) || !is.data.frame(features) || nrow(features) == 0) {
-    return(data.frame(start = integer(), end = integer(), stringsAsFactors = FALSE))
-  }
-
+    return(data.frame(start = integer(), end = integer(), stringsAsFactors = FALSE))}
+  # Select features that match the specified feature types and optionally skip motif hits
   type_values <- tolower(as.character(features$type))
   keep <- type_values %in% tolower(feature_types)
   if (skip_motif_hits) {
     keep <- keep & !vapply(
       seq_len(nrow(features)),
       function(i) sytogen_feature_is_motif_hit(features[i, , drop = FALSE]),
-      logical(1)
-    )
-  }
+      logical(1))}
   selected <- features[keep, , drop = FALSE]
   if (nrow(selected) == 0) {
-    return(data.frame(start = integer(), end = integer(), stringsAsFactors = FALSE))
-  }
-  data.frame(start = as.integer(selected$start), end = as.integer(selected$end), stringsAsFactors = FALSE)
-}
+    return(data.frame(start = integer(), end = integer(), stringsAsFactors = FALSE))}
+  data.frame(start = as.integer(selected$start), end = as.integer(selected$end), stringsAsFactors = FALSE)}
 
 sytogen_clean_sequence <- function(sequence) {
   if (is.null(sequence) || is.na(sequence) || !nzchar(trimws(as.character(sequence)))) {
-    stop("Sequence input is empty.")
-  }
-
+    stop("Sequence input is empty.")}
+  # Clean the sequence by removing non-alphabetic characters and converting to uppercase
   cleaned <- toupper(gsub("[^A-Z]", "", as.character(sequence)))
   if (!nzchar(cleaned)) {
-    stop("Sequence input is empty after normalization.")
-  }
-
-  cleaned
-}
+    stop("Sequence input is empty after normalization.")}
+  return(cleaned)}
 
 sytogen_normalize_motif_vector <- function(motifs) {
   motifs <- unique(toupper(trimws(as.character(motifs))))
-  motifs[nzchar(motifs)]
-}
+  motifs[nzchar(motifs)]}
 
 sytogen_extract_motifs_from_text <- function(motif_text) {
   lines <- strsplit(as.character(motif_text), "\n", fixed = FALSE)[[1]]
@@ -199,158 +187,121 @@ sytogen_extract_motifs_from_text <- function(motif_text) {
   lines <- lines[nzchar(lines)]
   lines <- lines[lines != "MOTIF"]
   lines <- lines[!startsWith(lines, "#")]
-  unique(lines)
-}
+  unique(lines)}
 
 sytogen_extract_motifs <- function(motif_text = NULL, motifs = NULL) {
   if (!is.null(motifs) && length(motifs) > 0) {
     parsed <- sytogen_normalize_motif_vector(motifs)
-    if (length(parsed) > 0) return(parsed)
-  }
-
+    if (length(parsed) > 0) return(parsed)}
+  # If motif_text is NULL or empty, throw an error
   if (is.null(motif_text) || !nzchar(trimws(as.character(motif_text)))) {
-    stop("Provide either motif_text or a motifs vector.")
-  }
-
+    stop("Provide either motif_text or a motifs vector.")}
+  # Attempt to parse motif_text as a table first, and if that fails, 
+  # extract motifs from the text
   parsed_table <- try(sytogen_parse_motif_text(motif_text), silent = TRUE)
   if (!inherits(parsed_table, "try-error") && nrow(parsed_table) > 0) {
-    return(sytogen_normalize_motif_vector(parsed_table$motif))
-  }
-
+    return(sytogen_normalize_motif_vector(parsed_table$motif))}
+  # If parsing as a table fails, extract motifs from the text
   lines <- sytogen_extract_motifs_from_text(motif_text)
   if (length(lines) == 0) {
-    stop("Could not parse motifs from motif_text.")
-  }
-
-  lines
-}
+    stop("Could not parse motifs from motif_text.")}
+  return(lines)}
 
 mutate_base_at <- function(sequence, position, new_base) {
-  paste0(
-    if (position > 1) substr(sequence, 1, position - 1) else "",
+  paste0(if (position > 1) substr(sequence, 1, position - 1) else "",
     new_base,
-    if (position < nchar(sequence)) substr(sequence, position + 1, nchar(sequence)) else ""
-  )
-}
+    if (position < nchar(sequence)) substr(sequence, position + 1, nchar(sequence)) else "")}
 
 base_class <- function(base) {
   if (base %in% c("G", "C")) {
-    return("GC")
-  }
+    return("GC")}
   if (base %in% c("A", "T")) {
-    return("AT")
-  }
-  "OTHER"
-}
+    return("AT")}
+  return("OTHER")}
 
 sytogen_is_empty <- function(value) {
-  is.null(value) || length(value) == 0 || all(is.na(value)) || !nzchar(trimws(as.character(value[1])))
-}
+  is.null(value) || 
+    length(value) == 0 || 
+    all(is.na(value)) || 
+    !nzchar(trimws(as.character(value[1])))}
 
 sytogen_empty_range_table <- function() {
-  data.frame(start = integer(), end = integer(), stringsAsFactors = FALSE)
-}
+  data.frame(start = integer(), end = integer(), stringsAsFactors = FALSE)}
 
 sytogen_range_item_to_table <- function(range_item) {
   data.frame(
     start = as.integer(range_item[[1]]),
     end = as.integer(range_item[[2]]),
-    stringsAsFactors = FALSE
-  )
-}
+    stringsAsFactors = FALSE)}
 
 sytogen_parse_range_text <- function(part, sequence_length) {
   part <- trimws(part)
-  if (!nzchar(part)) {
-    return(NULL)
-  }
+  if (!nzchar(part)) {return(NULL)}
   if (!grepl("-", part, fixed = TRUE)) {
-    stop(sprintf("Could not parse range '%s' — expected a format like '100-200'.", part))
-  }
+    stop(sprintf("Could not parse range '%s' — expected a format like '100-200'.", part))}
 
   bounds <- strsplit(part, "-", fixed = TRUE)[[1]]
   if (length(bounds) < 2) {
-    stop(sprintf("Could not parse range '%s' — expected a format like '100-200'.", part))
-  }
+    stop(sprintf("Could not parse range '%s' — expected a format like '100-200'.", part))}
 
   start_value <- suppressWarnings(as.integer(trimws(bounds[1])))
   end_value <- suppressWarnings(as.integer(trimws(bounds[length(bounds)])))
   if (is.na(start_value) || is.na(end_value)) {
-    stop(sprintf("Could not parse range '%s' — start and end must be whole numbers.", part))
-  }
+    stop(sprintf("Could not parse range '%s' — start and end must be whole numbers.", part))}
   if (start_value < 1 || end_value < 1) {
-    stop(sprintf("Range '%s' must use positive, 1-based positions.", part))
-  }
+    stop(sprintf("Range '%s' must use positive, 1-based positions.", part))}
   if (start_value > end_value) {
-    stop(sprintf("Range '%s' has a start position after its end position.", part))
-  }
+    stop(sprintf("Range '%s' has a start position after its end position.", part))}
   if (end_value > sequence_length) {
-    stop(sprintf("Range '%s' extends past the end of the sequence (length %s).", part, sequence_length))
-  }
-
-  data.frame(start = start_value, end = end_value, stringsAsFactors = FALSE)
-}
+    stop(sprintf("Range '%s' extends past the end of the sequence (length %s).", part, sequence_length))}
+  return(data.frame(start = start_value, end = end_value, stringsAsFactors = FALSE))}
 
 sytogen_normalize_ranges <- function(ranges, sequence_length) {
   if (is.null(ranges) || (is.character(ranges) && !nzchar(trimws(ranges)))) {
-    return(sytogen_empty_range_table())
-  }
-
+    return(sytogen_empty_range_table())}
+  # If ranges is a data frame, check for start and end columns and return a
+  # normalized range table
   if (is.data.frame(ranges)) {
     column_names <- tolower(names(ranges))
     if (!all(c("start", "end") %in% column_names)) {
-      stop("Range data frame must have start and end columns.")
-    }
+      stop("Range data frame must have start and end columns.")}
     start_col <- names(ranges)[match("start", column_names)]
     end_col <- names(ranges)[match("end", column_names)]
     result <- data.frame(
       start = as.integer(ranges[[start_col]]),
       end = as.integer(ranges[[end_col]]),
-      stringsAsFactors = FALSE
-    )
-    return(dplyr::filter(result, !is.na(start), !is.na(end)))
-  }
-
+      stringsAsFactors = FALSE)
+    return(dplyr::filter(result, !is.na(start), !is.na(end)))}
+  # If ranges is a character vector, split it into parts and parse each part as a range
   if (is.list(ranges) && length(ranges) > 0 && is.numeric(ranges[[1]]) && length(ranges[[1]]) >= 2) {
-    return(dplyr::bind_rows(purrr::map(ranges, sytogen_range_item_to_table)))
-  }
-
+    return(dplyr::bind_rows(purrr::map(ranges, sytogen_range_item_to_table)))}
+  # If ranges is a character string, split it into parts and parse each part as a range
   parts <- strsplit(paste(as.character(ranges), collapse = ","), ",", fixed = TRUE)[[1]]
   rows <- purrr::map(parts, sytogen_parse_range_text, sequence_length = sequence_length)
   rows <- purrr::compact(rows)
-  if (!length(rows)) {
-    return(sytogen_empty_range_table())
-  }
-  dplyr::bind_rows(rows)
-}
+  if (!length(rows)) {return(sytogen_empty_range_table())}
+  return(dplyr::bind_rows(rows))}
 
 sytogen_position_in_ranges <- function(position, ranges) {
-  if (is.null(ranges) || nrow(ranges) == 0) {
-    return(FALSE)
-  }
-  any(position >= ranges$start & position <= ranges$end)
-}
+  if (is.null(ranges) || nrow(ranges) == 0) {return(FALSE)}
+  return(any(position >= ranges$start & position <= ranges$end))}
 
 sytogen_parse_codon_usage <- function(codon_df, fallback_sequence = NULL) {
   if (is.null(codon_df) || nrow(codon_df) == 0) {
-    if (is.null(fallback_sequence)) {
-      return(numeric())
-    }
+    if (is.null(fallback_sequence)) {return(numeric())}
     bias <- sytogen_calculate_codon_bias(fallback_sequence)
-    return(stats::setNames(as.numeric(bias$codon_bias$relative_synonymous_usage), bias$codon_bias$codon))
-  }
-
+    return(stats::setNames(as.numeric(bias$codon_bias$relative_synonymous_usage), bias$codon_bias$codon))}
+  # If codon_df is provided, look for a codon column and a 
+  # score column (fraction, frequency, value, usage, proportion, ranking_ratio, 
+  # ranking, count)
   column_names <- tolower(names(codon_df))
   codon_col <- names(codon_df)[match("codon", column_names)]
-  if (is.na(codon_col)) {
-    return(numeric())
-  }
+  if (is.na(codon_col)) {return(numeric())}
   score_candidates <- c("fraction", "frequency", "value", "usage", "proportion", "ranking_ratio", "ranking", "count")
   score_col <- names(codon_df)[match(score_candidates, column_names)]
   score_col <- score_col[!is.na(score_col)][1]
   if (is.na(score_col)) {
-    return(numeric())
-  }
+    return(numeric())}
   invert <- tolower(score_col) %in% c("ranking", "ranking_ratio")
 
   codons <- toupper(trimws(as.character(codon_df[[codon_col]])))
