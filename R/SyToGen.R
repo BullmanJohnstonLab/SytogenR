@@ -51,163 +51,23 @@ sytogen_detect_input_type <- function(input) {
 }
 
 sytogen_parse_fasta_file <- function(path) {
-	lines <- readLines(path, warn = FALSE)
-	lines <- lines[nzchar(trimws(lines))]
-	if (length(lines) == 0) {
-		stop("FASTA file is empty.")
-	}
-	header <- if (startsWith(lines[1], ">")) sub("^>", "", trimws(lines[1])) else basename(path)
-	sequence_lines <- lines[!startsWith(lines, ">")]
-	sequence <- sytogen_clean_sequence(paste(sequence_lines, collapse = ""))
+	parsed <- read_fasta_file(path)
 	list(
-		sequence = sequence,
-		id = header,
-		features = data.frame(),
-		annotations = list(molecule_type = "DNA"),
+		sequence = sytogen_clean_sequence(parsed$sequence),
+		id = parsed$id %||% parsed$name %||% basename(path),
+		features = if (is.data.frame(parsed$features)) parsed$features else data.frame(),
+		annotations = parsed$annotations %||% list(molecule_type = "DNA"),
 		format = "fasta"
 	)
 }
 
-sytogen_extract_qualifier_value <- function(text, key) {
-	pattern <- sprintf("/%s=\"?([^\"]+)\"?", key)
-	match <- regmatches(text, regexpr(pattern, text, perl = TRUE))
-	if (length(match) == 0 || !nzchar(match)) {
-		return(NA_character_)
-	}
-	sub(pattern, "\\1", match, perl = TRUE)
-}
-
-sytogen_parse_genbank_location <- function(location_text, sequence_length) {
-	text <- gsub("\\s+", "", location_text)
-	strand <- "+"
-	if (startsWith(text, "complement(")) {
-		strand <- "-"
-		text <- sub("^complement\\((.*)\\)$", "\\1", text)
-	}
-	if (startsWith(text, "join(")) {
-		text <- sub("^join\\((.*)\\)$", "\\1", text)
-	}
-	parts <- strsplit(text, ",", fixed = TRUE)[[1]]
-	ranges <- lapply(parts, function(part) {
-		part <- gsub("[<>]", "", part)
-		if (!grepl("\\.\\.", part)) {
-			pos <- suppressWarnings(as.integer(part))
-			return(data.frame(start = pos, end = pos, strand = strand, stringsAsFactors = FALSE))
-		}
-		bounds <- strsplit(part, "\\.\\.", perl = TRUE)[[1]]
-		start <- suppressWarnings(as.integer(bounds[1]))
-		end <- suppressWarnings(as.integer(bounds[2]))
-		if (is.na(start) || is.na(end)) {
-			return(NULL)
-		}
-		data.frame(start = start, end = end, strand = strand, stringsAsFactors = FALSE)
-	})
-	ranges <- Filter(Negate(is.null), ranges)
-	if (length(ranges) == 0) {
-		return(data.frame(start = integer(), end = integer(), strand = character(), stringsAsFactors = FALSE))
-	}
-	result <- do.call(rbind, ranges)
-	result$start <- pmax(1L, as.integer(result$start))
-	result$end <- pmin(as.integer(sequence_length), as.integer(result$end))
-	result
-}
-
 sytogen_parse_genbank_file <- function(path) {
-	lines <- readLines(path, warn = FALSE)
-	if (length(lines) == 0) {
-		stop("GenBank file is empty.")
-	}
-	sequence_lines <- character()
-	features <- list()
-	feature_block <- FALSE
-	sequence_block <- FALSE
-	current_feature_type <- NULL
-	current_feature_location <- NULL
-	current_qualifiers <- character()
-	sequence_id <- basename(path)
-	for (line in lines) {
-		if (startsWith(line, "LOCUS")) {
-			parts <- strsplit(trimws(line), "\\s+", perl = TRUE)[[1]]
-			if (length(parts) >= 2) {
-				sequence_id <- parts[2]
-			}
-		}
-		if (startsWith(line, "FEATURES")) {
-			feature_block <- TRUE
-			sequence_block <- FALSE
-			next
-		}
-		if (startsWith(line, "ORIGIN")) {
-			sequence_block <- TRUE
-			feature_block <- FALSE
-			if (!is.null(current_feature_type)) {
-				features[[length(features) + 1]] <- list(type = current_feature_type, location = current_feature_location, qualifiers = current_qualifiers)
-				current_feature_type <- NULL
-				current_feature_location <- NULL
-				current_qualifiers <- character()
-			}
-			next
-		}
-		if (sequence_block) {
-			if (startsWith(trimws(line), "//")) {
-				sequence_block <- FALSE
-				next
-			}
-			sequence_lines <- c(sequence_lines, gsub("[^ACGTacgt]", "", line))
-			next
-		}
-		if (!feature_block) {
-			next
-		}
-		if (grepl("^ {5}[A-Za-z_]+", line, perl = TRUE)) {
-			if (!is.null(current_feature_type)) {
-				features[[length(features) + 1]] <- list(type = current_feature_type, location = current_feature_location, qualifiers = current_qualifiers)
-			}
-			current_feature_type <- trimws(substr(line, 6, 20))
-			current_feature_location <- trimws(substr(line, 21, nchar(line)))
-			current_qualifiers <- character()
-		} else if (grepl("^ {21}/", line, perl = TRUE)) {
-			current_qualifiers <- c(current_qualifiers, trimws(substr(line, 22, nchar(line))))
-		}
-	}
-	if (!is.null(current_feature_type)) {
-		features[[length(features) + 1]] <- list(type = current_feature_type, location = current_feature_location, qualifiers = current_qualifiers)
-	}
-	sequence <- sytogen_clean_sequence(paste(sequence_lines, collapse = ""))
-	feature_rows <- list()
-	for (feature in features) {
-		location_ranges <- sytogen_parse_genbank_location(feature$location, nchar(sequence))
-		if (nrow(location_ranges) == 0) {
-			next
-		}
-		gene_name <- NA_character_
-		if (length(feature$qualifiers) > 0) {
-			for (qualifier in feature$qualifiers) {
-				if (startsWith(qualifier, "/gene=") || startsWith(qualifier, "/locus_tag=") || startsWith(qualifier, "/label=") || startsWith(qualifier, "/note=")) {
-					gene_name <- sytogen_extract_qualifier_value(qualifier, sub("^/([^=]+)=.*$", "\\1", qualifier))
-					if (!is.na(gene_name)) {
-						break
-					}
-				}
-			}
-		}
-		for (i in seq_len(nrow(location_ranges))) {
-			feature_rows[[length(feature_rows) + 1]] <- data.frame(
-				type = feature$type,
-				start = as.integer(location_ranges$start[i]),
-				end = as.integer(location_ranges$end[i]),
-				strand = as.character(location_ranges$strand[i]),
-				gene = ifelse(is.na(gene_name), "", gene_name),
-				stringsAsFactors = FALSE
-			)
-		}
-	}
-	features_df <- if (length(feature_rows) > 0) do.call(rbind, feature_rows) else data.frame(type = character(), start = integer(), end = integer(), strand = character(), gene = character(), stringsAsFactors = FALSE)
+	parsed <- read_genbank_file(path)
 	list(
-		sequence = sequence,
-		id = sequence_id,
-		features = features_df,
-		annotations = list(molecule_type = "DNA"),
+		sequence = sytogen_clean_sequence(parsed$sequence),
+		id = parsed$id %||% parsed$name %||% basename(path),
+		features = if (is.data.frame(parsed$features)) parsed$features else data.frame(),
+		annotations = parsed$annotations %||% list(molecule_type = "DNA"),
 		format = "genbank"
 	)
 }
